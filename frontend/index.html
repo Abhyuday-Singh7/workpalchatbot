@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>WorkPal - Central Automation Brain</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <h1>WorkPal</h1>
+        <p>Central Automation Brain for your departments</p>
+      </header>
+
+      <!-- PAGE 1: Select Departments -->
+      <section id="page1" class="page active">
+        <h2>1. Select Departments</h2>
+        <label>
+          User ID:
+          <input type="text" id="userIdInput" placeholder="e.g. user123" />
+        </label>
+        <p>Select up to 5–6 departments:</p>
+        <div class="checkbox-group">
+          <label><input type="checkbox" value="HR" /> HR</label>
+          <label><input type="checkbox" value="Accounts" /> Accounts</label>
+          <label><input type="checkbox" value="Sales" /> Sales</label>
+          <label><input type="checkbox" value="Admin" /> Admin</label>
+          <label><input type="checkbox" value="Law" /> Law</label>
+          <label><input type="checkbox" value="Dev Team" /> Dev Team</label>
+          <label><input type="checkbox" value="Product Team" /> Product Team</label>
+        </div>
+        <button type="button" id="nextFromDepartments">Next: Upload Files</button>
+        <div id="page1Status" class="status"></div>
+      </section>
+
+      <!-- PAGE 2: Upload Files -->
+      <section id="page2" class="page">
+        <h2>2. Upload Department & Company Files</h2>
+        <div class="two-column">
+          <div>
+            <h3>Department Instruction PDFs & Excel Databases</h3>
+            <div id="departmentUploads"></div>
+          </div>
+          <div>
+            <h3>Central Company Rule File</h3>
+            <p>Company policies, authority levels, cross-department workflows, restrictions, legal rules.</p>
+            <input type="file" id="centralRulesFile" />
+          </div>
+        </div>
+        <button type="button" id="uploadAndContinue">Upload & Continue to Chat</button>
+        <div id="page2Status" class="status"></div>
+      </section>
+
+      <!-- PAGE 3: WorkPal Chatbot -->
+      <section id="page3" class="page">
+        <h2>3. WorkPal Central Bot</h2>
+        <div id="chatWindow" class="chat-window"></div>
+        <div class="chat-input">
+          <textarea
+            id="chatMessageInput"
+            rows="3"
+            placeholder="Ask WorkPal to perform a task using your department rules and Excel databases..."
+          ></textarea>
+          <button type="button" id="sendMessage">Send</button>
+        </div>
+        <div id="page3Status" class="status"></div>
+      </section>
+    </div>
+
+    <script src="main.js"></script>
+  </body>
+  </html>
