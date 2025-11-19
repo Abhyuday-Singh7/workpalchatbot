@@ -1,11 +1,18 @@
 import os
 import smtplib
+import time
+import logging
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Optional
 
 
 class EmailConfigurationError(RuntimeError):
+    pass
+
+
+class EmailSendError(RuntimeError):
+    """Raised when an email could not be sent after retries."""
     pass
 
 
@@ -49,6 +56,8 @@ def send_email(
     """
     Send a plain-text email via SMTP using configured credentials.
     """
+    logger = logging.getLogger(__name__)
+
     sender_email, sender_password, smtp_server, smtp_port = _get_smtp_credentials()
 
     msg = MIMEMultipart()
@@ -60,7 +69,31 @@ def send_email(
 
     msg.attach(MIMEText(body, "plain"))
 
-    with smtplib.SMTP_SSL(smtp_server, smtp_port) as server:
-        server.login(sender_email, sender_password)
-        server.sendmail(sender_email, [to_email], msg.as_string())
+    max_attempts = 3
+    last_exc: Optional[Exception] = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            with smtplib.SMTP_SSL(smtp_server, smtp_port) as server:
+                server.login(sender_email, sender_password)
+                server.sendmail(sender_email, [to_email], msg.as_string())
+            # success
+            return
+        except Exception as exc:
+            last_exc = exc
+            logger.warning(
+                "Attempt %d/%d: failed to send email to %s: %s",
+                attempt,
+                max_attempts,
+                to_email,
+                str(exc),
+            )
+            logger.debug("Email send exception", exc_info=True)
+            if attempt < max_attempts:
+                backoff = 2 ** (attempt - 1)  # 1, 2, 4
+                time.sleep(backoff)
+
+    # If we reach here all attempts failed
+    msg = f"Failed to send email to {to_email} after {max_attempts} attempts: {last_exc}"
+    logger.error(msg)
+    raise EmailSendError(msg)
 
