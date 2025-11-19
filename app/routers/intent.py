@@ -11,6 +11,7 @@ from .. import models, schemas
 from ..database import get_db
 from ..services import excel_service
 from ..services.email_service import EmailConfigurationError, send_email
+from ..services.pdf_service import central_rules_get_flag
 
 
 logger = logging.getLogger(__name__)
@@ -143,6 +144,117 @@ def execute_intent(
                 count = excel_service.excel_update(
                     excel_path, intent.SHEET, intent.CONDITION, intent.VALUES
                 )
+
+                # If the update set status to 'resigned', trigger auto-send logic
+                try:
+                    status_val = None
+                    if isinstance(intent.VALUES, dict):
+                        for k, v in intent.VALUES.items():
+                            if str(k).strip().lower() == "status":
+                                status_val = v
+                                break
+
+                    if status_val and str(status_val).strip().lower() == "resigned":
+                        # Check central rules flag for this user
+                        try:
+                            flag = central_rules_get_flag(request.user_id, "auto_send_on_resignation", db)
+                        except Exception:
+                            flag = False
+
+                        if flag:
+                            # Determine employee name: try VALUES, then read the affected rows
+                            employee_name = None
+                            if isinstance(intent.VALUES, dict):
+                                for candidate in ("employee_name", "name", "full_name"):
+                                    if candidate in intent.VALUES and intent.VALUES[candidate]:
+                                        employee_name = str(intent.VALUES[candidate])
+                                        break
+
+                            if not employee_name:
+                                try:
+                                    rows = excel_service.excel_read(excel_path, intent.SHEET, intent.CONDITION)
+                                    if rows:
+                                        first = rows[0]
+                                        for col in first.keys():
+                                            if isinstance(col, str) and "name" in col.lower():
+                                                employee_name = first[col]
+                                                break
+                                except Exception:
+                                    employee_name = None
+
+                            if employee_name:
+                                # Build SEND_EMAIL intent using HR template or fallback
+                                # Fetch latest HR department rule for this user
+                                dept_rule = (
+                                    db.query(models.DepartmentRule)
+                                    .filter(
+                                        models.DepartmentRule.user_id == request.user_id,
+                                        models.DepartmentRule.department == "HR",
+                                    )
+                                    .order_by(models.DepartmentRule.created_at.desc())
+                                    .first()
+                                )
+                                template = None
+                                if dept_rule and getattr(dept_rule, "rule_text", None):
+                                    template = dept_rule.rule_text
+
+                                subject = "Resignation Acceptance"
+                                if template:
+                                    body = template.replace("{name}", str(employee_name))
+                                else:
+                                    body = f"Dear {employee_name},\n\nWe acknowledge and accept your resignation.\n\nBest regards, HR"
+
+                                send_intent = schemas.OperationIntent(
+                                    ACTION="SEND_EMAIL",
+                                    DEPARTMENT="HR",
+                                    EMPLOYEE_NAME=str(employee_name),
+                                    EMAIL=None,
+                                    SUBJECT=subject,
+                                    BODY=body,
+                                )
+                                send_request = schemas.IntentExecutionRequest(
+                                    user_id=request.user_id, intent=send_intent
+                                )
+
+                                # Reuse execute_intent to perform send (synchronous)
+                                try:
+                                    result = execute_intent(send_request, db)
+                                except Exception as exc:
+                                    result = {"success": False, "message": str(exc)}
+
+                                # Log to EmailAudit model if available
+                                audit_status = "FAILED"
+                                msg_text = None
+                                try:
+                                    if isinstance(result, dict):
+                                        success = bool(result.get("success"))
+                                        msg_text = result.get("message")
+                                    elif hasattr(result, "success"):
+                                        success = bool(getattr(result, "success"))
+                                        msg_text = getattr(result, "message", None)
+                                    else:
+                                        success = False
+
+                                    audit_status = "SENT" if success else "FAILED"
+                                    if hasattr(models, "EmailAudit"):
+                                        try:
+                                            audit = models.EmailAudit(
+                                                user_id=request.user_id,
+                                                to_email=str(send_intent.EMAIL or ""),
+                                                subject=subject,
+                                                body=body,
+                                                status=audit_status,
+                                                error_message=(None if success else str(msg_text)),
+                                            )
+                                            db.add(audit)
+                                            db.commit()
+                                        except Exception:
+                                            logger.exception("Failed to write EmailAudit record")
+                                except Exception:
+                                    logger.exception("Error processing send email result for audit")
+                except Exception:
+                    logger.exception("Error in auto-send-on-resignation flow; continuing")
+
                 return schemas.IntentExecutionResponse(
                     success=True,
                     message=f"UPDATE completed for {count} rows",
