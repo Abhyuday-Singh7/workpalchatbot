@@ -87,68 +87,82 @@ async def upload_department_excel(
     Upload the department Excel database and persist its path.
     Saved as /data/{department}/{department}_database.xlsx.
     """
-    # Validate extension and MIME type
+    # Validate extension and optional MIME type
     filename = file.filename or ""
     ext = Path(filename).suffix.lower()
-    mime = file.content_type or ""
+    mime = (file.content_type or "").lower()
 
-    if ext != ".xlsx":
+    allowed_exts = {".xlsx", ".xlsm", ".xltx", ".xltm"}
+    allowed_mimes = {
+        ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ".xlsm": "application/vnd.ms-excel.sheet.macroEnabled.12",
+        ".xltx": "application/vnd.openxmlformats-officedocument.spreadsheetml.template",
+        ".xltm": "application/vnd.ms-excel.template.macroEnabled.12",
+    }
+
+    if ext not in allowed_exts:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only .xlsx Excel files are supported.",
+            detail="Invalid file extension. Allowed: .xlsx, .xlsm, .xltx, .xltm",
         )
 
-    expected_mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    if mime != expected_mime:
+    # If client provided a MIME type, validate it against expected for the extension
+    expected_mime = allowed_mimes.get(ext)
+    if mime and expected_mime and mime != expected_mime:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid file type. Please upload a valid .xlsx Excel file.",
+            detail="Invalid MIME type for the provided Excel extension.",
         )
 
     dept_dir = get_department_data_dir(department)
-    target_path: Path = (dept_dir / f"{department.lower()}_database.xlsx").resolve()
+    target_path: Path = (dept_dir / f"{department.lower()}_database{ext}").resolve()
 
+    # Ensure parent directories exist
     os.makedirs(target_path.parent.as_posix(), exist_ok=True)
 
+    # Read and save file in binary mode
     contents = await file.read()
-    file_size = len(contents)
-
-    if file_size == 0:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Uploaded Excel file is empty.",
-        )
-
-    logger.info(
-        "Saving Excel upload",
-        extra={
-            "path": str(target_path),
-            "size_bytes": file_size,
-            "extension": ext,
-        },
-    )
-
-    # Save using binary mode as required
     with open(target_path, "wb") as f:
         f.write(contents)
 
-    # Optional validation: ensure openpyxl can open the workbook
+    # Validate saved file size
     try:
-        import openpyxl
+        file_size = os.path.getsize(target_path)
+    except OSError:
+        file_size = 0
 
-        wb = openpyxl.load_workbook(target_path)
-        wb.close()
-    except InvalidFileException as exc:
-        logger.error("Invalid Excel file content at %s", target_path, exc_info=True)
-        # Remove invalid file
+    if file_size == 0:
         try:
             os.remove(target_path)
         except OSError:
             pass
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Uploaded file is not a valid .xlsx Excel file.",
-        ) from exc
+            detail="Uploaded Excel file is empty.",
+        )
+
+    # Log saved path and size (do NOT log binary contents)
+    logger.info(
+        "Saved Excel upload",
+        extra={"path": str(target_path), "size_bytes": file_size, "extension": ext},
+    )
+
+    # Verify that openpyxl can open the workbook; if invalid, delete file and return 400
+    try:
+        import openpyxl
+
+        wb = openpyxl.load_workbook(target_path)
+        wb.close()
+    except InvalidFileException:
+        logger.error("Invalid or corrupted Excel file at %s", target_path, exc_info=True)
+        try:
+            os.remove(target_path)
+        except OSError:
+            pass
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or corrupted Excel file",
+        )
 
     record = models.DepartmentFile(
         user_id=user_id,

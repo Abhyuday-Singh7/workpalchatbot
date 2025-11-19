@@ -41,8 +41,9 @@ def _ensure_excel_path(path: Path) -> Path:
     resolved = path.resolve()
     if not os.path.exists(resolved):
         raise FileNotFoundError("Excel file not found")
-    if resolved.suffix.lower() != ".xlsx":
-        raise ValueError("Only .xlsx Excel files are supported.")
+    allowed = {".xlsx", ".xlsm", ".xltx", ".xltm"}
+    if resolved.suffix.lower() not in allowed:
+        raise ValueError("Only .xlsx/.xlsm/.xltx/.xltm Excel files are supported.")
 
     logger.info(
         "Opening Excel file",
