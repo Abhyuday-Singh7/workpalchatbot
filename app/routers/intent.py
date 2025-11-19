@@ -2,7 +2,9 @@ from pathlib import Path
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import JSONResponse
 from openpyxl.utils.exceptions import InvalidFileException
+import re
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
@@ -199,7 +201,7 @@ def execute_intent(
         # Email sending is allowed only for HR in this implementation.
         if department.upper() != "HR":
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_403_FORBIDDEN,
                 detail="SEND_EMAIL is only supported for HR department.",
             )
 
@@ -215,7 +217,7 @@ def execute_intent(
             )
 
         # If email is not provided in the intent, look it up from the HR Excel
-        # by employee name. This expects a column whose header contains 'email'.
+        # by employee name using pandas helper.
         if not to_email:
             # Look up latest HR Excel file for this user
             dept_file = (
@@ -236,80 +238,23 @@ def execute_intent(
                     ),
                 )
 
-            excel_path = Path(dept_file.excel_path)
-            resolved = excel_service._ensure_excel_path(excel_path)  # type: ignore[attr-defined]
-            import openpyxl
-
-            wb = openpyxl.load_workbook(resolved, data_only=True)
-            try:
-                sheet = excel_service._get_sheet(wb, None)  # type: ignore[attr-defined]
-                header_row = next(
-                    sheet.iter_rows(min_row=1, max_row=1, values_only=True),
-                    None,
+            excel_path = str(Path(dept_file.excel_path))
+            # Use provided sheet or default to first sheet (0)
+            sheet_name = intent.SHEET if intent.SHEET else 0
+            found = excel_service.lookup_email_by_name(excel_path, sheet_name, employee_name)
+            if found is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Employee not found in HR database",
                 )
-                if not header_row:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=(
-                            "HR Excel database has no header row; "
-                            "cannot resolve employee email."
-                        ),
-                    )
+            to_email = found
 
-                headers = list(header_row)
-                # Identify the email column
-                email_idx = None
-                name_idx = None
-                for idx, h in enumerate(headers):
-                    if isinstance(h, str) and "email" in h.lower():
-                        email_idx = idx
-                    if isinstance(h, str) and "name" in h.lower():
-                        name_idx = idx
-
-                if email_idx is None:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=(
-                            "Employee email column not found in HR Excel "
-                            "database. Cannot send email."
-                        ),
-                    )
-                if name_idx is None:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=(
-                            "Employee name column not found in HR Excel "
-                            "database. Cannot send email."
-                        ),
-                    )
-
-                # Find row for the employee
-                found_email = None
-                for row in sheet.iter_rows(min_row=2, values_only=True):
-                    name_val = row[name_idx]
-                    if str(name_val).strip().lower() == employee_name.strip().lower():
-                        found_email = row[email_idx]
-                        break
-
-                if not found_email:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=(
-                            "Employee not found in HR Excel database. "
-                            "Cannot send email."
-                        ),
-                    )
-                to_email = str(found_email)
-            finally:
-                wb.close()
-
-        if not to_email:
+        # Validate email format with simple regex
+        email_re = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+        if not email_re.match(str(to_email).strip()):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=(
-                    "Employee email is missing and could not be resolved. "
-                    "Cannot send email."
-                ),
+                detail="Invalid email address format.",
             )
 
         if not subject or not body:
@@ -320,23 +265,27 @@ def execute_intent(
                 ),
             )
 
+        # Placeholder central rules check: ensure central rules allow sending emails
+        def central_rules_allows_email(db_session: Session, user_id: str, action: str) -> bool:
+            # Reuse check_authority to determine if action is disallowed by central rules
+            allowed, requires_approval, _ = check_authority(db_session, user_id, "HR", action)
+            return allowed and not requires_approval
+
+        if not central_rules_allows_email(db, request.user_id, "SEND_EMAIL"):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Central rules forbid sending this email.",
+            )
+
+        # Attempt to send the email and return structured JSON
         try:
             send_email(to_email=to_email, subject=subject, body=body)
+            return {"success": True, "message": "EMAIL sent"}
         except EmailConfigurationError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=str(exc),
-            ) from exc
+            logger.error("Email configuration error: %s", exc, exc_info=True)
+            return {"success": False, "message": str(exc)}
         except Exception as exc:  # pragma: no cover - defensive logging
             logger.error("Failed to send email", exc_info=True)
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to send email.",
-            ) from exc
-
-        return schemas.IntentExecutionResponse(
-            success=True,
-            message="EMAIL sent",
-        )
+            return {"success": False, "message": "Failed to send email: %s" % str(exc)}
 
     raise HTTPException(status_code=400, detail="Unsupported ACTION in intent.")
