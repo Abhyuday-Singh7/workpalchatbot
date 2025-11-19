@@ -13,6 +13,52 @@ import openpyxl
 logger = logging.getLogger(__name__)
 
 
+# Custom exceptions
+class InvalidExcelError(Exception):
+    """Raised when an uploaded or existing Excel file is invalid or cannot be opened."""
+
+
+ALLOWED_EXCEL_EXTS = {".xlsx", ".xlsm", ".xltx", ".xltm"}
+
+
+def load_workbook_safe(path: str, **kwargs) -> openpyxl.Workbook:
+    """Load an Excel workbook with safety checks.
+
+    Validates that the file exists, has a supported extension and isn't trivially small
+    (< 512 bytes). Wraps any load errors in :class:`InvalidExcelError`.
+    """
+    p = Path(path)
+    if not p.exists():
+        raise InvalidExcelError("Excel file not found")
+
+    if p.suffix.lower() not in ALLOWED_EXCEL_EXTS:
+        raise InvalidExcelError("Unsupported Excel extension")
+
+    try:
+        size = p.stat().st_size
+    except OSError as e:
+        raise InvalidExcelError("Cannot read Excel file size") from e
+
+    if size <= 512:
+        raise InvalidExcelError("Excel file is too small or empty")
+
+    try:
+        wb = openpyxl.load_workbook(p, **kwargs)
+        return wb
+    except Exception as e:
+        raise InvalidExcelError(f"Failed to open Excel workbook: {e}") from e
+
+
+def save_workbook_atomic(workbook: openpyxl.Workbook, path: str) -> None:
+    """Save workbook atomically: write to a tmp file then replace the target path.
+
+    This prevents partial writes from leaving corrupted files in place.
+    """
+    tmp_path = f"{path}.tmp"
+    workbook.save(tmp_path)
+    os.replace(tmp_path, path)
+
+
 @dataclass
 class Condition:
     column: str
@@ -77,7 +123,7 @@ def excel_read(
     Read Excel data using openpyxl, with optional simple condition.
     """
     resolved = _ensure_excel_path(path)
-    wb = openpyxl.load_workbook(resolved, data_only=True)
+    wb = load_workbook_safe(str(resolved), data_only=True)
     try:
         sheet = _get_sheet(wb, sheet_name)
 
@@ -155,7 +201,7 @@ def _normalise_insert_values(
 
 def excel_insert(path: Path, sheet_name: Optional[str], values: Any) -> None:
     resolved = _ensure_excel_path(path)
-    wb = openpyxl.load_workbook(resolved)
+    wb = load_workbook_safe(str(resolved))
     try:
         sheet = _get_sheet(wb, sheet_name)
         normalised = _normalise_insert_values(sheet, values)
@@ -167,7 +213,7 @@ def excel_insert(path: Path, sheet_name: Optional[str], values: Any) -> None:
 
 def excel_update(path: Path, sheet_name: str, condition: str, values: Dict[str, Any]) -> int:
     resolved = _ensure_excel_path(path)
-    wb = openpyxl.load_workbook(resolved)
+    wb = load_workbook_safe(str(resolved))
     try:
         sheet = _get_sheet(wb, sheet_name)
         cond = parse_simple_condition(condition)
@@ -200,7 +246,7 @@ def excel_update(path: Path, sheet_name: str, condition: str, values: Dict[str, 
 
 def excel_delete(path: Path, sheet_name: str, condition: str) -> int:
     resolved = _ensure_excel_path(path)
-    wb = openpyxl.load_workbook(resolved)
+    wb = load_workbook_safe(str(resolved))
     try:
         sheet = _get_sheet(wb, sheet_name)
         cond = parse_simple_condition(condition)
