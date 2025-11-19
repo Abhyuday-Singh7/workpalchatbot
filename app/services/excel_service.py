@@ -12,6 +12,8 @@ import openpyxl
 
 logger = logging.getLogger(__name__)
 
+import pandas as pd
+
 
 # Custom exceptions
 class InvalidExcelError(Exception):
@@ -276,3 +278,41 @@ def excel_delete(path: Path, sheet_name: str, condition: str) -> int:
         return len(rows_to_delete)
     finally:
         wb.close()
+
+
+def lookup_email_by_name(path: str, sheet: str, employee_name: str) -> Optional[str]:
+    """Lookup an employee email by name from an Excel sheet using pandas.
+
+    - Normalizes column names to lowercase and stripped.
+    - Supports multiple header variants for name and email.
+    - Returns the first matching email string or None if not found.
+    """
+    try:
+        df = pd.read_excel(path, sheet_name=sheet, dtype=str)
+    except Exception as e:
+        logger.debug("Failed to read Excel file %s sheet %s: %s", path, sheet, e)
+        return None
+
+    # Normalize headers
+    df.columns = df.columns.str.lower().str.strip()
+
+    name_candidates = ["name", "employee_name", "full_name"]
+    email_candidates = ["email", "e-mail", "email_address", "mail"]
+
+    name_col = next((c for c in name_candidates if c in df.columns), None)
+    email_col = next((c for c in email_candidates if c in df.columns), None)
+
+    if not name_col or not email_col:
+        return None
+
+    target = employee_name.strip().lower()
+    matches = df[df[name_col].astype(str).str.strip().str.lower() == target]
+
+    if matches.empty:
+        return None
+
+    emails = matches[email_col].astype(str).tolist()
+    if len(emails) > 1:
+        logger.warning("Multiple email matches for name '%s' in %s:%s; returning first", employee_name, path, sheet)
+
+    return emails[0]
