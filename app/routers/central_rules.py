@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from .. import models, schemas
 from ..config import DATA_DIR
 from ..database import get_db
-from ..services.pdf_service import extract_text_from_pdf
+from ..services.pdf_service import extract_text_from_pdf, parse_central_rules_flags
 
 
 router = APIRouter(prefix="/central-rules", tags=["central-rules"])
@@ -39,9 +39,13 @@ async def upload_central_rules(
     else:
         rule_text = file_path.read_text(encoding="utf-8")
 
+    # Parse rule text for actionable flags and persist them on the CentralRule row
+    flags = parse_central_rules_flags(rule_text)
+
     rule = models.CentralRule(
         user_id=user_id,
         rule_text=rule_text,
+        auto_send_on_resignation=bool(flags.get("auto_send_on_resignation", False)),
     )
     db.add(rule)
     db.commit()
