@@ -12,12 +12,47 @@ from ..database import get_db
 from ..services import excel_service
 from ..services.email_service import EmailConfigurationError, send_email
 from ..services.pdf_service import central_rules_get_flag
+import json
 
 
 logger = logging.getLogger(__name__)
 
 
 router = APIRouter(prefix="/intent", tags=["intent"])
+
+
+@router.get("/audits/email")
+def list_email_audits(user_id: str, db: Session = Depends(get_db)):
+    """Return the last 100 email audits for the requesting user.
+
+    This endpoint is intentionally simple: it requires a `user_id` parameter
+    and will only return audits for that user.
+    """
+    audits = (
+        db.query(models.EmailAudit)
+        .filter(models.EmailAudit.user_id == user_id)
+        .order_by(models.EmailAudit.created_at.desc())
+        .limit(100)
+        .all()
+    )
+
+    result = []
+    for a in audits:
+        result.append(
+            {
+                "id": a.id,
+                "user_id": a.user_id,
+                "department": a.department,
+                "employee_name": a.employee_name,
+                "to_email": a.to_email,
+                "subject": a.subject,
+                "body_excerpt": a.body_excerpt,
+                "status": a.status,
+                "error_message": a.error_message,
+                "created_at": a.created_at.isoformat() if a.created_at else None,
+            }
+        )
+    return result
 
 
 def check_authority(
@@ -390,14 +425,57 @@ def execute_intent(
             )
 
         # Attempt to send the email and return structured JSON
+        # Build intent execution log record (intent payload)
+        intent_payload = request.intent.dict()
+
         try:
             send_email(to_email=to_email, subject=subject, body=body)
-            return {"success": True, "message": "EMAIL sent"}
+            send_result = {"success": True, "message": "EMAIL sent"}
+            status_str = "SENT"
+            error_msg = None
         except EmailConfigurationError as exc:
             logger.error("Email configuration error: %s", exc, exc_info=True)
-            return {"success": False, "message": str(exc)}
+            send_result = {"success": False, "message": str(exc)}
+            status_str = "FAILED"
+            error_msg = str(exc)
         except Exception as exc:  # pragma: no cover - defensive logging
             logger.error("Failed to send email", exc_info=True)
-            return {"success": False, "message": "Failed to send email: %s" % str(exc)}
+            send_result = {"success": False, "message": "Failed to send email: %s" % str(exc)}
+            status_str = "FAILED"
+            error_msg = str(exc)
+
+        # Record EmailAudit
+        try:
+            if hasattr(models, "EmailAudit"):
+                body_excerpt = (body or "")[:500]
+                audit = models.EmailAudit(
+                    user_id=request.user_id,
+                    department=department,
+                    employee_name=employee_name,
+                    to_email=str(to_email),
+                    subject=subject,
+                    body_excerpt=body_excerpt,
+                    status=status_str,
+                    error_message=error_msg,
+                )
+                db.add(audit)
+                db.commit()
+        except Exception:
+            logger.exception("Failed to create EmailAudit record")
+
+        # Record IntentExecutionLog
+        try:
+            if hasattr(models, "IntentExecutionLog"):
+                log = models.IntentExecutionLog(
+                    user_id=request.user_id,
+                    intent_payload=intent_payload,
+                    result=send_result,
+                )
+                db.add(log)
+                db.commit()
+        except Exception:
+            logger.exception("Failed to create IntentExecutionLog record")
+
+        return send_result
 
     raise HTTPException(status_code=400, detail="Unsupported ACTION in intent.")
