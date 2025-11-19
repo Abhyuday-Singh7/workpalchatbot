@@ -40,6 +40,30 @@ central bot and department bots as described in your architecture.
 - `GET  /central-rules` – fetch central rules for a user.
 - `POST /intent/execute` – execute an operation intent (used by the WorkPal bot).
 
+## SMTP setup (sending emails)
+
+To enable outgoing email (used for `SEND_EMAIL` intents), set SMTP configuration in your environment or a `.env` file. For Gmail you should create an App Password (recommended) and use it as `SMTP_SENDER_PASSWORD`.
+
+Required environment variables:
+
+- `SMTP_SENDER_EMAIL` — the sender address (e.g. `noreply@yourdomain.com` or your Gmail address).
+- `SMTP_SENDER_PASSWORD` — the SMTP password (Gmail App Password or SMTP credential).
+- `SMTP_SERVER` — SMTP host (default: `smtp.gmail.com`).
+- `SMTP_PORT` — SMTP port (default: `465` for SSL).
+
+Quick Gmail setup:
+
+1. Enable 2-Step Verification on your Google account.
+2. Create an App Password for `Mail` and `Other` (or the device you choose).
+3. Use the generated App Password as `SMTP_SENDER_PASSWORD`.
+4. Set `SMTP_SENDER_EMAIL` to your Gmail address.
+
+Troubleshooting tips:
+
+- If sending fails, check logs — the service retries up to 3 times with exponential backoff and logs detailed errors.
+- If you receive `InvalidFileException` when uploading Excel files, ensure the file is a valid `.xlsx`/`.xlsm`/`.xltx`/`.xltm` and not corrupted. Try opening and re-saving in Excel to repair.
+- Ensure `OPENROUTER_API_KEY` or your configured LLM provider keys are set when using LLM features.
+
 ## Using this with WorkPal (the bot)
 
 The LLM-based WorkPal bot should:
